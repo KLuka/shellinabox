@@ -96,16 +96,20 @@ extern int pthread_sigmask(int, const sigset_t *, sigset_t *)
 #if defined(HAVE_DLOPEN)
 // SSL support is optional. Only enable it, if the library can be loaded.
 long          (*BIO_ctrl)(BIO *, int, long, void *);
+BIO_METHOD *  (*BIO_f_base64)(void);
 BIO_METHOD *  (*BIO_f_buffer)(void);
 void          (*BIO_free_all)(BIO *);
 BIO *         (*BIO_new)(BIO_METHOD *);
 BIO *         (*BIO_new_socket)(int, int);
 BIO *         (*BIO_pop)(BIO *);
 BIO *         (*BIO_push)(BIO *, BIO *);
+BIO_METHOD *  (*BIO_s_mem)(void);
+int           (*BIO_write)(BIO *, const void *, int);
 void          (*ERR_clear_error)(void);
 void          (*ERR_clear_error)(void);
 unsigned long (*ERR_peek_error)(void);
 unsigned long (*ERR_peek_error)(void);
+unsigned char * (*SHA1)(const unsigned char *, unsigned long, unsigned char *);
 long          (*SSL_CTX_callback_ctrl)(SSL_CTX *, int, void (*)(void));
 int           (*SSL_CTX_check_private_key)(const SSL_CTX *);
 long          (*SSL_CTX_ctrl)(SSL_CTX *, int, long, void *);
@@ -270,16 +274,20 @@ static void loadSSL(void) {
     const char *fn;
   } symbols[] = {
     { { &BIO_ctrl },                    "BIO_ctrl" },
+    { { &BIO_f_base64 },                "BIO_f_base64" },
     { { &BIO_f_buffer },                "BIO_f_buffer" },
     { { &BIO_free_all },                "BIO_free_all" },
     { { &BIO_new },                     "BIO_new" },
     { { &BIO_new_socket },              "BIO_new_socket" },
     { { &BIO_pop },                     "BIO_pop" },
     { { &BIO_push },                    "BIO_push" },
+    { { &BIO_s_mem },                   "BIO_s_mem" },
+    { { &BIO_write },                   "BIO_write" },
     { { &ERR_clear_error },             "ERR_clear_error" },
     { { &ERR_clear_error },             "ERR_clear_error" },
     { { &ERR_peek_error },              "ERR_peek_error" },
     { { &ERR_peek_error },              "ERR_peek_error" },
+    { { &SHA1 },                        "SHA1" },
     { { &SSL_CTX_callback_ctrl },       "SSL_CTX_callback_ctrl" },
     { { &SSL_CTX_check_private_key },   "SSL_CTX_check_private_key" },
     { { &SSL_CTX_ctrl },                "SSL_CTX_ctrl" },
