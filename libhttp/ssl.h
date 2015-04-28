@@ -61,6 +61,7 @@
 #undef HAVE_OPENSSL
 typedef struct BIO        BIO;
 typedef struct BIO_METHOD BIO_METHOD;
+typedef struct BUF_MEM    BUF_MEM;
 typedef struct SSL        SSL;
 typedef struct SSL_CTX    SSL_CTX;
 typedef struct SSL_METHOD SSL_METHOD;
@@ -71,16 +72,21 @@ typedef struct X509       X509;
 
 #if defined(HAVE_DLOPEN)
 extern long    (*x_BIO_ctrl)(BIO *, int, long, void *);
+extern BIO_METHOD *(*x_BIO_f_base64)(void);
 extern BIO_METHOD *(*x_BIO_f_buffer)(void);
 extern void    (*x_BIO_free_all)(BIO *);
+extern int     (*x_BIO_get_mem_ptr)(BIO *, BUF_MEM **);
 extern BIO    *(*x_BIO_new)(BIO_METHOD *);
 extern BIO    *(*x_BIO_new_socket)(int, int);
 extern BIO    *(*x_BIO_pop)(BIO *);
 extern BIO    *(*x_BIO_push)(BIO *, BIO *);
+extern BIO_METHOD *(*x_BIO_s_mem)(void);
+extern int     (*x_BIO_write)(BIO *, const void *, int);
 extern void    (*x_ERR_clear_error)(void);
 extern void    (*x_ERR_clear_error)(void);
 extern unsigned long (*x_ERR_peek_error)(void);
 extern unsigned long (*x_ERR_peek_error)(void);
+extern unsigned char *(*x_SHA1)(const unsigned char *, unsigned long, unsigned char *);
 extern long    (*x_SSL_CTX_callback_ctrl)(SSL_CTX *, int, void (*)(void));
 extern int     (*x_SSL_CTX_check_private_key)(const SSL_CTX *);
 extern long    (*x_SSL_CTX_ctrl)(SSL_CTX *, int, long, void *);
@@ -116,16 +122,20 @@ extern void    (*x_sk_zero)(void *st);
 extern void   *(*x_SSL_COMP_get_compression_methods)(void);
 
 #define BIO_ctrl                     x_BIO_ctrl
+#define BIO_f_base64                 x_BIO_f_base64
 #define BIO_f_buffer                 x_BIO_f_buffer
 #define BIO_free_all                 x_BIO_free_all
 #define BIO_new                      x_BIO_new
 #define BIO_new_socket               x_BIO_new_socket
 #define BIO_pop                      x_BIO_pop
 #define BIO_push                     x_BIO_push
+#define BIO_s_mem                    x_BIO_s_mem
+#define BIO_write                    x_BIO_write
 #define ERR_clear_error              x_ERR_clear_error
 #define ERR_clear_error              x_ERR_clear_error
 #define ERR_peek_error               x_ERR_peek_error
 #define ERR_peek_error               x_ERR_peek_error
+#define SHA1                         x_SHA1
 #define SSL_CTX_callback_ctrl        x_SSL_CTX_callback_ctrl
 #define SSL_CTX_check_private_key    x_SSL_CTX_check_private_key
 #define SSL_CTX_ctrl                 x_SSL_CTX_ctrl

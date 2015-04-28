@@ -109,6 +109,7 @@ function ShellInABox(url, container) {
   this.pendingKeys  = '';
   this.keysInFlight = false;
   this.connected    = false;
+  this.websocket    = false;
   this.superClass.constructor.call(this, container);
 
   // We have to initiate the first XMLHttpRequest from a timer. Otherwise,
@@ -253,6 +254,33 @@ ShellInABox.prototype.keyPressReadyStateChange = function(request) {
       this.sendKeys('');
     }
   }
+};
+
+ShellInABox.prototype.wsConnect = function() {
+  var url                  = this.url.replace(/^http/, 'ws');
+  this.websocket           = new WebSocket(url);
+  this.websocket.onopen    = this.wsOnOpen;
+  this.websocket.onclose   = this.wsOnClose;
+  this.websocket.onerror   = this.wsOnError;
+  this.websocket.onmessage = this.wsOnMessage;
+};
+
+ShellInABox.prototype.wsOnOpen = function() {
+  this.connected           = true;
+};
+
+ShellInABox.prototype.wsOnClose = function() {
+  this.connected           = false;
+  this.websocket           = false;
+};
+
+ShellInABox.prototype.wsOnError = function() {
+  this.connected           = false;
+  this.websocket           = false;
+};
+
+ShellInABox.prototype.wsOnMessage = function() {
+
 };
 
 ShellInABox.prototype.keysPressed = function(ch) {

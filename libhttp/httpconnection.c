@@ -848,13 +848,22 @@ static int httpHandleCommand(struct HttpConnection *http,
       // Check for WebSocket handshake
       const char *upgrade                    = getFromHashMap(&http->header,
                                                               "upgrade");
-      if (upgrade && !strcmp(upgrade, "WebSocket")) {
+      if (upgrade && !strcmp(upgrade, "websocket")) {
         const char *connection               = getFromHashMap(&http->header,
                                                               "connection");
         if (connection && !strcmp(connection, "Upgrade")) {
           const char *origin                 = getFromHashMap(&http->header,
                                                               "origin");
-          if (origin) {
+          const char *key                    = getFromHashMap(&http->header,
+                                                              "sec-websocket-key");
+          if (key && origin) {
+
+            for (const char *ptr = key; *ptr; ptr++) {
+              if ((unsigned char)*ptr < ' ') {
+                goto bad_ws_upgrade;
+              }
+            }
+
             for (const char *ptr = origin; *ptr; ptr++) {
               if ((unsigned char)*ptr < ' ') {
                 goto bad_ws_upgrade;
@@ -875,6 +884,8 @@ static int httpHandleCommand(struct HttpConnection *http,
               port                           = stringPrintf(NULL,
                                                             ":%d", http->port);
             }
+
+            char *accept                     = httpWebSocketAcceptTokenCreate(key);
             char *response                   = stringPrintf(NULL,
               "HTTP/1.1 101 Web Socket Protocol Handshake\r\n"
               "Upgrade: WebSocket\r\n"
@@ -882,13 +893,16 @@ static int httpHandleCommand(struct HttpConnection *http,
               "WebSocket-Origin: %s\r\n"
               "WebSocket-Location: %s://%s%s%s\r\n"
               "%s%s%s"
+              "Sec-WebSocket-Accept: %s\r\n"
               "\r\n",
               origin,
               http->sslHndl ? "wss" : "ws", host && *host ? host : "localhost",
               port ? port : "", http->path,
               protocol ? "WebSocket-Protocol: " : "",
               protocol ? protocol : "",
-              protocol ? "\r\n" : "");
+              protocol ? "\r\n" : "",
+              accept);
+            httpWebSocketAcceptTokenDelete(accept);
             free(port);
             debug("Switching to WebSockets");
             httpTransfer(http, response, strlen(response));
@@ -1863,6 +1877,55 @@ void httpSendWebSocketBinaryMsg(struct HttpConnection *http, int type,
   // Transmit header and payload.
   memmove(data + i + 1, buf, len);
   httpTransfer(http, data, len + i + 1);
+}
+
+char *httpWebSocketAcceptTokenCreate(const char *key)
+{
+  char *acceptToken                = NULL;
+#if defined(HAVE_OPENSSL)
+  // To create "Sec-WebSocket-Accept" token we have to concatenate client key
+  // with WebSocket magic number, hash it with SHA1 and encode it base64. 
+  // (See RFC6455)
+  char *cKey                       = stringPrintf(NULL,
+    "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key);
+
+  // Hash concatenated key
+  unsigned char hash[20];
+  SHA1((unsigned char *) cKey, strlen(cKey), hash);
+  free(cKey);
+
+  // Encode hash
+  BIO *b64, *mem;
+  check(b64                        = BIO_new(BIO_f_base64()));
+  check(mem                        = BIO_new(BIO_s_mem()));
+  b64                              = BIO_push(b64, mem);
+  BIO_write(b64, hash, 20);
+  BIO_flush(b64);
+
+  BUF_MEM *bufferPtr;
+  BIO_get_mem_ptr(b64, &bufferPtr);
+
+  // Get base64 encoded string
+  check(acceptToken                = (char *) malloc(bufferPtr->length));
+  memcpy(acceptToken, bufferPtr->data, bufferPtr->length-1);
+  acceptToken[bufferPtr->length-1] = 0;
+
+  // Free BIO chain
+  BIO_free_all(mem);
+
+  debug("Generated WebSocket Accept token: %s", acceptToken);
+#else
+  // For now we need OpenSSL headers for SHA1 hashing and base64 encoding.
+  // If this is not available we return incorrect token and handle the error
+  // on client side.
+  debug("OpenSSL is needed for WebSocket support!");
+#endif
+  return acceptToken ? acceptToken : stringPrintf(NULL, "%s", "invalid");
+}
+
+void httpWebSocketAcceptTokenDelete(char *token)
+{
+  free(token);
 }
 
 void httpExitLoop(struct HttpConnection *http, int exitAll) {
