@@ -773,6 +773,143 @@ void httpTransferPartialReply(struct HttpConnection *http, char *msg, int len){
   httpTransfer(http, msg, len);
 }
 
+static int httpWebSocketHandshakeValidate(struct HttpConnection *http,
+                                          const char **key,
+                                          const char **protocol)
+{
+  // RFC6455 - The handshake from the client looks as follows:
+  //
+  //    GET /chat HTTP/1.1
+  //    Host: server.example.com
+  //    Upgrade: websocket
+  //    Connection: Upgrade
+  //    Origin: http://example.com
+  //    Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+  //    Sec-WebSocket-Protocol: chat, superchat
+  //    Sec-WebSocket-Version: 13
+  //
+  const char *upgrade     = getFromHashMap(&http->header, "upgrade");
+  const char *connection  = getFromHashMap(&http->header, "connection");
+  if (!upgrade    || !strcasestr(upgrade, "websocket") ||
+      !connection || !strcasestr(connection, "upgrade")) {
+    return 0;
+  }
+
+  const char *host        = getFromHashMap(&http->header, "host");
+  const char *origin      = getFromHashMap(&http->header, "origin");
+  if (!host || !origin) {
+    return 0;
+  }
+
+  for (const char *ptr = host; *ptr; ptr++) {
+    if ((unsigned char)*ptr < ' ') {
+      return 0;
+    }
+  }
+
+  for (const char *ptr = origin; *ptr; ptr++) {
+    if ((unsigned char)*ptr < ' ') {
+      return 0;
+    }
+  }
+
+  const char *tmpKey      = getFromHashMap(&http->header, "sec-websocket-key");
+  const char *version     = getFromHashMap(&http->header, "sec-websocket-version");
+  if (!tmpKey || !version) {
+    return 0;
+  }
+
+  for (const char *ptr = tmpKey; *ptr; ptr++) {
+    if ((unsigned char)*ptr < ' ') {
+      return 0;
+    }
+  }
+
+  *key                    = tmpKey;
+
+  // Optional
+  const char *tmpProtocol = getFromHashMap(&http->header, "sec-websocket-protocol");
+  if (tmpProtocol) {
+    for (const char *ptr = tmpProtocol; *ptr; ptr++) {
+      if ((unsigned char)*ptr < ' ') {
+        return 0;
+      }
+    }
+    *protocol             = tmpProtocol;
+  }
+
+  // Valid WebSocket client handshake
+  debug("Valid WebSocket upgrade request!");
+  return 1;
+}
+
+static char *httpWebSocketHandshakeAccept(const char *key)
+{
+  char *accept                = NULL;
+#if defined(HAVE_OPENSSL)
+  // To create "Sec-WebSocket-Accept" token we have to concatenate client key
+  // with WebSocket magic number, hash it with SHA1 and then encode it in base64.
+  // (See RFC6455)
+  char *concatenatedKey       = stringPrintf(NULL,
+    "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key);
+
+  // Hash concatenated key
+  unsigned char hash[20];
+  SHA1((unsigned char *) concatenatedKey, strlen(concatenatedKey), hash);
+  free(concatenatedKey);
+
+  // Get base64 encoded string
+  BIO *b64, *mem;
+  check(b64                   = BIO_new(BIO_f_base64()));
+  check(mem                   = BIO_new(BIO_s_mem()));
+  b64                         = BIO_push(b64, mem);
+  BIO_write(b64, hash, 20);
+  BIO_flush(b64);
+  BUF_MEM *bufferPtr;
+  BIO_get_mem_ptr(b64, &bufferPtr);
+
+  check(accept                = (char *) malloc(bufferPtr->length));
+  memcpy(accept, bufferPtr->data, bufferPtr->length-1);
+  accept[bufferPtr->length-1] = 0;
+
+  // Free BIO chain
+  BIO_free_all(mem);
+
+  debug("Generated Sec-WebSocket-Accept: \"%s\"", accept);
+#else
+  // For now we need OpenSSL headers for SHA1 hashing and base64 encoding.
+  // If this is not available we return incorrect token and handle the error
+  // on client side.
+  debug("OpenSSL is needed for WebSocket support!");
+#endif
+  return accept ? accept : stringPrintf(NULL, "%s", "invalid");
+}
+
+static char *httpWebSocketHandshakeResponse(const char *key, const char *protocol)
+{
+  // RFC6455 - The handshake from the server looks as follows:
+  //
+  //     HTTP/1.1 101 Switching Protocols
+  //     Upgrade: websocket
+  //     Connection: Upgrade
+  //     Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+  //     Sec-WebSocket-Protocol: chat
+  char *accept                     = httpWebSocketHandshakeAccept(key);
+  char *response                   = stringPrintf(NULL,
+    "HTTP/1.1 101 Switching Protocols\r\n"
+    "Upgrade: websocket\r\n"
+    "Connection: Upgrade\r\n"
+    "Sec-WebSocket-Accept: %s\r\n"
+    "%s%s%s"
+    "\r\n",
+    accept,
+    protocol ? "Sec-WebSocket-Protocol: " : "",
+    protocol ? protocol : "",
+    protocol ? "\r\n" : "");
+  free(accept);
+  return response;
+}
+
 static int httpHandleCommand(struct HttpConnection *http,
                              const struct Trie *handlers) {
   debug("Handling \"%s\" \"%s\"", http->method, http->path);
@@ -846,78 +983,20 @@ static int httpHandleCommand(struct HttpConnection *http,
   if (h) {
     if (h->websocketHandler) {
       // Check for WebSocket handshake
-      const char *upgrade                    = getFromHashMap(&http->header,
-                                                              "upgrade");
-      if (upgrade && !strcmp(upgrade, "websocket")) {
-        const char *connection               = getFromHashMap(&http->header,
-                                                              "connection");
-        if (connection && !strcmp(connection, "Upgrade")) {
-          const char *origin                 = getFromHashMap(&http->header,
-                                                              "origin");
-          const char *key                    = getFromHashMap(&http->header,
-                                                              "sec-websocket-key");
-          if (key && origin) {
-
-            for (const char *ptr = key; *ptr; ptr++) {
-              if ((unsigned char)*ptr < ' ') {
-                goto bad_ws_upgrade;
-              }
-            }
-
-            for (const char *ptr = origin; *ptr; ptr++) {
-              if ((unsigned char)*ptr < ' ') {
-                goto bad_ws_upgrade;
-              }
-            }
-
-            const char *protocol             = getFromHashMap(&http->header,
-                                                         "websocket-protocol");
-            if (protocol) {
-              for (const char *ptr = protocol; *ptr; ptr++) {
-                if ((unsigned char)*ptr < ' ') {
-                  goto bad_ws_upgrade;
-                }
-              }
-            }
-            char *port                       = NULL;
-            if (http->port != (http->sslHndl ? 443 : 80)) {
-              port                           = stringPrintf(NULL,
-                                                            ":%d", http->port);
-            }
-
-            char *accept                     = httpWebSocketAcceptTokenCreate(key);
-            char *response                   = stringPrintf(NULL,
-              "HTTP/1.1 101 Web Socket Protocol Handshake\r\n"
-              "Upgrade: WebSocket\r\n"
-              "Connection: Upgrade\r\n"
-              "WebSocket-Origin: %s\r\n"
-              "WebSocket-Location: %s://%s%s%s\r\n"
-              "%s%s%s"
-              "Sec-WebSocket-Accept: %s\r\n"
-              "\r\n",
-              origin,
-              http->sslHndl ? "wss" : "ws", host && *host ? host : "localhost",
-              port ? port : "", http->path,
-              protocol ? "WebSocket-Protocol: " : "",
-              protocol ? protocol : "",
-              protocol ? "\r\n" : "",
-              accept);
-            httpWebSocketAcceptTokenDelete(accept);
-            free(port);
-            debug("Switching to WebSockets");
-            httpTransfer(http, response, strlen(response));
-            if (http->expecting < 0) {
-              http->expecting                = 0;
-            }
-            http->websocketHandler           = h->websocketHandler;
-            httpSetState(http, WEBSOCKET);
-            return HTTP_READ_MORE;
-          }
+      const char *key                        = NULL;
+      const char *protocol                   = NULL;
+      if (httpWebSocketHandshakeValidate(http, &key, &protocol)) {
+        char *response                       = httpWebSocketHandshakeResponse(key,
+                                                                          protocol);
+        httpTransfer(http, response, strlen(response));
+        if (http->expecting < 0) {
+          http->expecting                    = 0;
         }
+        http->websocketHandler               = h->websocketHandler;
+        httpSetState(http, WEBSOCKET);
+        return HTTP_READ_MORE;
       }
     }
-  bad_ws_upgrade:;
-
     if (h->handler) {
       check(diff);
       while (diff > http->path && diff[-1] == '/') {
@@ -1879,54 +1958,6 @@ void httpSendWebSocketBinaryMsg(struct HttpConnection *http, int type,
   httpTransfer(http, data, len + i + 1);
 }
 
-char *httpWebSocketAcceptTokenCreate(const char *key)
-{
-  char *acceptToken                = NULL;
-#if defined(HAVE_OPENSSL)
-  // To create "Sec-WebSocket-Accept" token we have to concatenate client key
-  // with WebSocket magic number, hash it with SHA1 and encode it base64. 
-  // (See RFC6455)
-  char *cKey                       = stringPrintf(NULL,
-    "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key);
-
-  // Hash concatenated key
-  unsigned char hash[20];
-  SHA1((unsigned char *) cKey, strlen(cKey), hash);
-  free(cKey);
-
-  // Encode hash
-  BIO *b64, *mem;
-  check(b64                        = BIO_new(BIO_f_base64()));
-  check(mem                        = BIO_new(BIO_s_mem()));
-  b64                              = BIO_push(b64, mem);
-  BIO_write(b64, hash, 20);
-  BIO_flush(b64);
-
-  BUF_MEM *bufferPtr;
-  BIO_get_mem_ptr(b64, &bufferPtr);
-
-  // Get base64 encoded string
-  check(acceptToken                = (char *) malloc(bufferPtr->length));
-  memcpy(acceptToken, bufferPtr->data, bufferPtr->length-1);
-  acceptToken[bufferPtr->length-1] = 0;
-
-  // Free BIO chain
-  BIO_free_all(mem);
-
-  debug("Generated WebSocket Accept token: %s", acceptToken);
-#else
-  // For now we need OpenSSL headers for SHA1 hashing and base64 encoding.
-  // If this is not available we return incorrect token and handle the error
-  // on client side.
-  debug("OpenSSL is needed for WebSocket support!");
-#endif
-  return acceptToken ? acceptToken : stringPrintf(NULL, "%s", "invalid");
-}
-
-void httpWebSocketAcceptTokenDelete(char *token)
-{
-  free(token);
-}
 
 void httpExitLoop(struct HttpConnection *http, int exitAll) {
   serverExitLoop(http->server, exitAll);
