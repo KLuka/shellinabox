@@ -159,7 +159,5 @@ const char *httpGetQuery(const struct HttpConnection *http);
 const char *httpGetURL(const struct HttpConnection *http);
 const char *httpGetVersion(const struct HttpConnection *http);
 const struct HashMap *httpGetHeaders(const struct HttpConnection *http);
-char *httpWebSocketAcceptTokenCreate(const char *key);
-void  httpWebSocketAcceptTokenDelete(char *token);
 
 #endif /* HTTP_CONNECTION__ */
