@@ -53,6 +53,7 @@
 #include "libhttp/server.h"
 #include "libhttp/http.h"
 #include "libhttp/ssl.h"
+#include "libhttp/websocket.h"
 
 #define HTTP_DONE          0
 #define HTTP_ERROR         1

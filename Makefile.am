@@ -72,6 +72,7 @@ LIBHTTP_INCLUDES     = libhttp/hashmap.h                                      \
                        libhttp/server.h                                       \
                        libhttp/ssl.h                                          \
                        libhttp/url.h                                          \
+                       libhttp/websocket.h                                    \
                        config.h
 libhttp_la_SOURCES   = libhttp/hashmap.c                                      \
                        libhttp/trie.c                                         \
@@ -79,6 +80,7 @@ libhttp_la_SOURCES   = libhttp/hashmap.c                                      \
                        libhttp/server.c                                       \
                        libhttp/ssl.c                                          \
                        libhttp/url.c                                          \
+                       libhttp/websocket.c                                    \
                        $(LIBHTTP_INCLUDES)                                    \
                        libhttp/libhttp.sym
 libhttp_la_LDFLAGS   = -export-symbols  $(top_srcdir)/libhttp/libhttp.sym     \
