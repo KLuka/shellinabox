@@ -773,143 +773,6 @@ void httpTransferPartialReply(struct HttpConnection *http, char *msg, int len){
   httpTransfer(http, msg, len);
 }
 
-static int httpWebSocketHandshakeValidate(struct HttpConnection *http,
-                                          const char **key,
-                                          const char **protocol)
-{
-  // RFC6455 - The handshake from the client looks as follows:
-  //
-  //    GET /chat HTTP/1.1
-  //    Host: server.example.com
-  //    Upgrade: websocket
-  //    Connection: Upgrade
-  //    Origin: http://example.com
-  //    Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
-  //    Sec-WebSocket-Protocol: chat, superchat
-  //    Sec-WebSocket-Version: 13
-  //
-  const char *upgrade     = getFromHashMap(&http->header, "upgrade");
-  const char *connection  = getFromHashMap(&http->header, "connection");
-  if (!upgrade    || !strcasestr(upgrade, "websocket") ||
-      !connection || !strcasestr(connection, "upgrade")) {
-    return 0;
-  }
-
-  const char *host        = getFromHashMap(&http->header, "host");
-  const char *origin      = getFromHashMap(&http->header, "origin");
-  if (!host || !origin) {
-    return 0;
-  }
-
-  for (const char *ptr = host; *ptr; ptr++) {
-    if ((unsigned char)*ptr < ' ') {
-      return 0;
-    }
-  }
-
-  for (const char *ptr = origin; *ptr; ptr++) {
-    if ((unsigned char)*ptr < ' ') {
-      return 0;
-    }
-  }
-
-  const char *tmpKey      = getFromHashMap(&http->header, "sec-websocket-key");
-  const char *version     = getFromHashMap(&http->header, "sec-websocket-version");
-  if (!tmpKey || !version) {
-    return 0;
-  }
-
-  for (const char *ptr = tmpKey; *ptr; ptr++) {
-    if ((unsigned char)*ptr < ' ') {
-      return 0;
-    }
-  }
-
-  *key                    = tmpKey;
-
-  // Optional
-  const char *tmpProtocol = getFromHashMap(&http->header, "sec-websocket-protocol");
-  if (tmpProtocol) {
-    for (const char *ptr = tmpProtocol; *ptr; ptr++) {
-      if ((unsigned char)*ptr < ' ') {
-        return 0;
-      }
-    }
-    *protocol             = tmpProtocol;
-  }
-
-  // Valid WebSocket client handshake
-  debug("Valid WebSocket upgrade request!");
-  return 1;
-}
-
-static char *httpWebSocketHandshakeAccept(const char *key)
-{
-  char *accept                = NULL;
-#if defined(HAVE_OPENSSL)
-  // To create "Sec-WebSocket-Accept" token we have to concatenate client key
-  // with WebSocket magic number, hash it with SHA1 and then encode it in base64.
-  // (See RFC6455)
-  char *concatenatedKey       = stringPrintf(NULL,
-    "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key);
-
-  // Hash concatenated key
-  unsigned char hash[20];
-  SHA1((unsigned char *) concatenatedKey, strlen(concatenatedKey), hash);
-  free(concatenatedKey);
-
-  // Get base64 encoded string
-  BIO *b64, *mem;
-  check(b64                   = BIO_new(BIO_f_base64()));
-  check(mem                   = BIO_new(BIO_s_mem()));
-  b64                         = BIO_push(b64, mem);
-  BIO_write(b64, hash, 20);
-  BIO_flush(b64);
-  BUF_MEM *bufferPtr;
-  BIO_get_mem_ptr(b64, &bufferPtr);
-
-  check(accept                = (char *) malloc(bufferPtr->length));
-  memcpy(accept, bufferPtr->data, bufferPtr->length-1);
-  accept[bufferPtr->length-1] = 0;
-
-  // Free BIO chain
-  BIO_free_all(mem);
-
-  debug("Generated Sec-WebSocket-Accept: \"%s\"", accept);
-#else
-  // For now we need OpenSSL headers for SHA1 hashing and base64 encoding.
-  // If this is not available we return incorrect token and handle the error
-  // on client side.
-  debug("OpenSSL is needed for WebSocket support!");
-#endif
-  return accept ? accept : stringPrintf(NULL, "%s", "invalid");
-}
-
-static char *httpWebSocketHandshakeResponse(const char *key, const char *protocol)
-{
-  // RFC6455 - The handshake from the server looks as follows:
-  //
-  //     HTTP/1.1 101 Switching Protocols
-  //     Upgrade: websocket
-  //     Connection: Upgrade
-  //     Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
-  //     Sec-WebSocket-Protocol: chat
-  char *accept                     = httpWebSocketHandshakeAccept(key);
-  char *response                   = stringPrintf(NULL,
-    "HTTP/1.1 101 Switching Protocols\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    "Sec-WebSocket-Accept: %s\r\n"
-    "%s%s%s"
-    "\r\n",
-    accept,
-    protocol ? "Sec-WebSocket-Protocol: " : "",
-    protocol ? protocol : "",
-    protocol ? "\r\n" : "");
-  free(accept);
-  return response;
-}
-
 static int httpHandleCommand(struct HttpConnection *http,
                              const struct Trie *handlers) {
   debug("Handling \"%s\" \"%s\"", http->method, http->path);
@@ -985,8 +848,8 @@ static int httpHandleCommand(struct HttpConnection *http,
       // Check for WebSocket handshake
       const char *key                        = NULL;
       const char *protocol                   = NULL;
-      if (httpWebSocketHandshakeValidate(http, &key, &protocol)) {
-        char *response                       = httpWebSocketHandshakeResponse(key,
+      if (webSocketHandshakeValidate(http, &key, &protocol)) {
+        char *response                       = webSocketHandshakeResponse(key,
                                                                           protocol);
         httpTransfer(http, response, strlen(response));
         if (http->expecting < 0) {
@@ -1356,135 +1219,47 @@ static int httpParsePayload(struct HttpConnection *http, int offset,
 static int httpHandleWebSocket(struct HttpConnection *http, int offset,
                                const char *buf, int bytes) {
   check(http->websocketHandler);
-  int ch                          = 0x00;
-  while (bytes > offset) {
-    if (http->websocketType & WS_UNDEFINED) {
-      ch                          = httpGetChar(http, buf, bytes, &offset);
-      check(ch >= 0);
-      if (http->websocketType & 0xFF) {
-        // Reading another byte of length information.
-        if (http->expecting > 0xFFFFFF) {
-          return 0;
-        }
-        http->expecting           = (128 * http->expecting) + (ch & 0x7F);
-        if ((ch & 0x80) == 0) {
-          // Done reading length information.
-          http->websocketType    &= ~WS_UNDEFINED;
 
-          // ch is used to detect when we read the terminating byte in text
-          // mode. In binary mode, it must be set to something other than 0xFF.
-          ch                      = 0x00;
-        }
-      } else {
-        // Reading first byte of frame.
-        http->websocketType       = (ch & 0xFF) | WS_START_OF_FRAME;
-        if (ch & 0x80) {
-          // For binary data, we have to read the length before we can start
-          // processing payload.
-          http->websocketType    |= WS_UNDEFINED;
-          http->expecting         = 0;
-        }
-      }
-    } else if (http->websocketType & 0x80) {
-      // Binary data
-      if (http->expecting) {
-        if (offset < 0) {
-        handle_partial:
-          check(-offset <= http->partialLength);
-          int len                 = -offset;
-          if (len >= http->expecting) {
-            len                   = http->expecting;
-            http->websocketType  |= WS_END_OF_FRAME;
-          }
-          if (len &&
-              http->websocketHandler(http, http->arg, http->websocketType,
-                                  http->partial + http->partialLength + offset,
-                                  len) != HTTP_DONE) {
-            return 0;
-          }
-
-          if (ch == 0xFF) {
-            // In text mode, we jump to handle_partial, when we find the
-            // terminating 0xFF byte. If so, we should try to consume it now.
-            if (len < http->partialLength) {
-              len++;
-              http->websocketType = WS_UNDEFINED;
-            }
-          }
-
-          if (len == http->partialLength) {
-            free(http->partial);
-            http->partial         = NULL;
-            http->partialLength   = 0;
-          } else {
-            memmove(http->partial, http->partial + len,
-                    http->partialLength - len);
-            http->partialLength  -= len;
-          }
-          offset                 += len;
-          http->expecting        -= len;
-        } else {
-        handle_buffered:;
-          int len                 = bytes - offset;
-          if (len >= http->expecting) {
-            len                   = http->expecting;
-            http->websocketType  |= WS_END_OF_FRAME;
-          }
-          if (len &&
-              http->websocketHandler(http, http->arg, http->websocketType,
-                                     buf + offset, len) != HTTP_DONE) {
-            return 0;
-          }
-
-          if (ch == 0xFF) {
-            // In text mode, we jump to handle_buffered, when we find the
-            // terminating 0xFF byte. If so, we should consume it now.
-            check(offset + len < bytes);
-            len++;
-            http->websocketType   = WS_UNDEFINED;
-          }
-          offset                 += len;
-          http->expecting        -= len;
-        }
-        http->websocketType      &= ~(WS_START_OF_FRAME | WS_END_OF_FRAME);
-      } else {
-        // Read all data. Go back to looking for a new frame header.
-        http->websocketType       = WS_UNDEFINED;
-      }
-    } else {
-      // Process text data until we find a 0xFF bytes.
-      int i                       = offset;
-
-      // If we have partial data, process that first.
-      while (i < 0) {
-        ch                        = httpGetChar(http, buf, bytes, &i);
-        check(ch != -1);
-
-        // Terminate when we either find the 0xFF, or we have reached the end
-        // of partial data.
-        if (ch == 0xFF || !i) {
-          // Set WS_END_OF_FRAME, iff we have found the 0xFF marker.
-          http->expecting         = i - offset - (ch == 0xFF);
-          goto handle_partial;
-        }
-      }
-
-      // Read all remaining buffered bytes (i.e. positive offset).
-      while (bytes > i) {
-        ch                        = httpGetChar(http, buf, bytes, &i);
-        check(ch != -1);
-
-        // Terminate when we either find the 0xFF, or we have reached the end
-        // of buffered data.
-        if (ch == 0xFF || bytes == i) {
-          // Set WS_END_OF_FRAME, iff we have found the 0xFF marker.
-          http->expecting         = i - offset - (ch == 0xFF);
-          goto handle_buffered;
-        }
-      }
-    }
+  int connection;
+  struct WebSocketHeader *header = webSocketHeaderRead(buf, bytes);
+  switch (header->opcode) {
+    case WS_OPCODE_FRAME_CONTINUE:;
+      debug("WS opcode 0x%02X not yet supported!", header->opcode);
+      connection                 = HTTP_DONE;
+      break;
+    case WS_OPCODE_FRAME_TEXT:;
+      char *decoded              = webSocketPayloadDecode(buf + header->payloadOffset,
+                                                          header->payloadLen,
+                                                          header->payloadMask);
+      debug("WS received message: %s", decoded);
+      free(decoded);
+      connection                 = HTTP_READ_MORE;
+      break;
+    case WS_OPCODE_FRAME_BINARY:;
+      debug("WS opcode 0x%02X not yet supported!", header->opcode);
+      connection                 = HTTP_DONE;
+      break;
+    case WS_OPCODE_CTL_CLOSE:;
+      char *close                = webSocketResponseClose(buf, bytes);
+      httpWrite(http, buf, bytes);
+      free(close);
+      connection                 = HTTP_DONE;
+      break;
+    case WS_OPCODE_CTL_PING:;
+    case WS_OPCODE_CTL_PONG:;
+      char *pingPong             = webSocketResponsePingPong(buf, bytes,
+                                                             header->opcode);
+      httpWrite(http, pingPong, bytes);
+      free(pingPong);
+      connection                 = HTTP_READ_MORE;
+      break;
+    default:
+      debug("WS: unknown opcode 0x%02X!", header->opcode);
+      connection                 = HTTP_DONE;
   }
-  return 1;
+
+  free(header);
+  return connection;
 }
 
 int httpHandleConnection(struct ServerConnection *connection, void *http_,
