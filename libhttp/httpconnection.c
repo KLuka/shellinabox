@@ -235,7 +235,7 @@ static int httpFinishCommand(struct HttpConnection *http) {
   int rc            = HTTP_DONE;
   if ((http->callback || http->websocketHandler) && !http->done) {
     rc              = http->callback ? http->callback(http, http->arg, NULL, 0)
-       : http->websocketHandler(http, http->arg, WS_CONNECTION_CLOSED, NULL,0);
+       : http->websocketHandler(http, http->arg, WS_CONNECTION_CLOSED, NULL, 0);
     check(rc != HTTP_SUSPEND);
     check(rc != HTTP_PARTIAL_REPLY);
     http->callback  = NULL;
@@ -406,7 +406,7 @@ void destroyHttpConnection(struct HttpConnection *http) {
         if (http->callback) {
           http->callback(http, http->arg, NULL, 0);
         } else if (http->websocketHandler) {
-          http->websocketHandler(http, http->arg, WS_CONNECTION_CLOSED,NULL,0);
+          http->websocketHandler(http, http->arg, WS_CONNECTION_CLOSED, NULL, 0);
         }
       }
       http->callback       = NULL;
@@ -1220,42 +1220,54 @@ static int httpHandleWebSocket(struct HttpConnection *http, int offset,
                                const char *buf, int bytes) {
   check(http->websocketHandler);
 
-  int connection;
+  char *response;
+  int connection, responseLen;
   struct WebSocketHeader *header = webSocketHeaderRead(buf, bytes);
+
   switch (header->opcode) {
-    case WS_OPCODE_FRAME_CONTINUE:;
-      debug("WS opcode 0x%02X not yet supported!", header->opcode);
-      connection                 = HTTP_DONE;
-      break;
-    case WS_OPCODE_FRAME_TEXT:;
-      char *decoded              = webSocketPayloadDecode(buf + header->payloadOffset,
-                                                          header->payloadLen,
-                                                          header->payloadMask);
-      debug("WS received message: %s", decoded);
-      free(decoded);
-      connection                 = HTTP_READ_MORE;
-      break;
-    case WS_OPCODE_FRAME_BINARY:;
-      debug("WS opcode 0x%02X not yet supported!", header->opcode);
-      connection                 = HTTP_DONE;
-      break;
-    case WS_OPCODE_CTL_CLOSE:;
-      char *close                = webSocketResponseClose(buf, bytes);
-      httpWrite(http, buf, bytes);
-      free(close);
-      connection                 = HTTP_DONE;
-      break;
-    case WS_OPCODE_CTL_PING:;
-    case WS_OPCODE_CTL_PONG:;
-      char *pingPong             = webSocketResponsePingPong(buf, bytes,
-                                                             header->opcode);
-      httpWrite(http, pingPong, bytes);
-      free(pingPong);
-      connection                 = HTTP_READ_MORE;
-      break;
-    default:
-      debug("WS: unknown opcode 0x%02X!", header->opcode);
-      connection                 = HTTP_DONE;
+  case WS_OPCODE_FRAME_CONTINUE:
+    debug("WebSocket opcode 0x%02X not yet supported!", header->opcode);
+    connection                 = HTTP_DONE;
+    break;
+  case WS_OPCODE_FRAME_TEXT:;
+    char *decoded              = webSocketPayloadDecode(NULL, buf +
+                                                        header->payloadOffset,
+                                                        header->payloadLen,
+                                                        header->payloadMask);
+    http->websocketHandler(http, http->arg, WS_CONNECTION_MESSAGE, decoded,
+                           header->payloadLen);
+    connection                 = HTTP_READ_MORE;
+    free(decoded);
+    break;
+  case WS_OPCODE_FRAME_BINARY:
+    debug("WebSocket opcode 0x%02X not yet supported!", header->opcode);
+    connection                 = HTTP_DONE;
+    break;
+  case WS_OPCODE_CTL_CLOSE:;
+    // On CLOSE messsage we respond with same, but unmasked payload and we
+    // close the connection.
+    unsigned int code;
+    response                   = webSocketResponseClose(header, buf,
+                                                        &responseLen, &code);
+    debug("Received WebSocket CLOSE message with code %u.", code);
+    httpWrite(http, response, responseLen);
+    connection                 = HTTP_DONE;
+    free(response);
+    break;
+  case WS_OPCODE_CTL_PING:
+  case WS_OPCODE_CTL_PONG:
+    // On PING/PONG message we respond with oposite opcode and unmasked
+    // payload. Connection is left open.
+    debug("Received WebSocket PING/PONG message.");
+    response                   = webSocketResponsePingPong(header, buf,
+                                                           &responseLen);
+    httpWrite(http, response, responseLen);
+    connection                 = HTTP_READ_MORE;
+    free(response);
+    break;
+  default:
+    debug("Received WebSocket unknown OPCODE 0x%02X!", header->opcode);
+    connection                 = HTTP_DONE;
   }
 
   free(header);

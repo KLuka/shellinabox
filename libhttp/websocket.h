@@ -73,18 +73,23 @@ struct WebSocketHeader {
 #define WS_OPCODE_CTL_PING       0x09
 #define WS_OPCODE_CTL_PONG       0x0A
 
+#define WS_PAYLOAD_MASK_LEN      0x04
+
 struct WebSocketHeader *webSocketHeaderRead(const char *msg, int len);
 
-char *webSocketResponseClose(const char *msg, int len);
-char *webSocketResponsePingPong(const char *msg, int len, int opcode);
+char *webSocketResponseClose(struct WebSocketHeader *header, const char *msg,
+                             int *responseLen, unsigned int *responseCode);
+char *webSocketResponsePingPong(struct WebSocketHeader *header, const char *msg,
+                                int *responseLen);
 
-char *webSocketPayloadDecode(const char *payload, int payloadLen,
+char *webSocketPayloadDecode(char *decoded, const char *payload, int payloadLen,
                              const unsigned char *payloadMask);
-char *webSocketPayloadEncode(const char *payload, int payloadLen,
+char *webSocketPayloadEncode(char *encoded, const char *payload, int payloadLen,
                              const unsigned char *payloadMask);
 
 int webSocketHandshakeValidate(struct HttpConnection *http,
                                const char **key, const char **protocol);
 char *webSocketHandshakeResponse(const char *key, const char *protocol);
 
-#endif
+void webSocketDebugDumpHeader(struct WebSocketHeader *header);
+#endif /* WEBSOCKET_H__ */

@@ -69,26 +69,26 @@ struct WebSocketHeader *webSocketHeaderRead(const char *msg, int len) {
 
   int maskLen               = header->masked ? 4 : 0;
   switch (header->payloadLen) {
-    case 0x7E:
-      // Use 2 bytes for payload length
-	  header->payloadLen    = ((unsigned long long)msg[3] & 0xFF);
-	  header->payloadLen   |= ((unsigned long long)msg[2] & 0xFF) << 8;
-	  header->payloadOffset = maskLen + 2 + 2;
-      break;
-	case 0x7F:
-      // Use 8 bytes for payload length
-	  header->payloadLen    = ((unsigned long long)msg[9] & 0xFF);
-	  header->payloadLen   |= ((unsigned long long)msg[8] & 0xFF) << 8;
-	  header->payloadLen   |= ((unsigned long long)msg[7] & 0xFF) << 16;
-	  header->payloadLen   |= ((unsigned long long)msg[6] & 0xFF) << 24;
-	  header->payloadLen   |= ((unsigned long long)msg[5] & 0xFF) << 32;
-	  header->payloadLen   |= ((unsigned long long)msg[4] & 0xFF) << 40;
-	  header->payloadLen   |= ((unsigned long long)msg[3] & 0xFF) << 48;
-	  header->payloadLen   |= ((unsigned long long)msg[2] & 0xFF) << 56;
-	  header->payloadOffset = maskLen + 2 + 8;
-      break;
-    default:
-	  header->payloadOffset = maskLen + 2;
+  case 0x7E:
+    // Use 2 bytes for payload length
+    header->payloadOffset = maskLen + 2 + 2;
+    header->payloadLen    = ((unsigned long long)msg[3] & 0xFF);
+    header->payloadLen   |= ((unsigned long long)msg[2] & 0xFF) << 8;
+    break;
+  case 0x7F:
+    // Use 8 bytes for payload length
+    header->payloadOffset = maskLen + 2 + 8;
+    header->payloadLen    = ((unsigned long long)msg[9] & 0xFF);
+    header->payloadLen   |= ((unsigned long long)msg[8] & 0xFF) << 8;
+    header->payloadLen   |= ((unsigned long long)msg[7] & 0xFF) << 16;
+    header->payloadLen   |= ((unsigned long long)msg[6] & 0xFF) << 24;
+    header->payloadLen   |= ((unsigned long long)msg[5] & 0xFF) << 32;
+    header->payloadLen   |= ((unsigned long long)msg[4] & 0xFF) << 40;
+    header->payloadLen   |= ((unsigned long long)msg[3] & 0xFF) << 48;
+    header->payloadLen   |= ((unsigned long long)msg[2] & 0xFF) << 56;
+    break;
+  default:
+    header->payloadOffset = maskLen + 2;
   }
 
   if (maskLen) {
@@ -99,55 +99,85 @@ struct WebSocketHeader *webSocketHeaderRead(const char *msg, int len) {
   return header;
 }
 
-char *webSocketResponseClose(const char *msg, int len) {
-  char *close;
-  check(close = malloc(len));
+char *webSocketResponseClose(struct WebSocketHeader *header, const char *msg,
+                             int *responseLen, unsigned int *responseCode) {
+  // Server responses shouldn't be masked and use the same code as
+  // received message, if ther is any.
+  *responseCode      = 0;
+  *responseLen       = header->payloadOffset + header->payloadLen
+                       - WS_PAYLOAD_MASK_LEN;
 
-  // Use same frame for response
-  memcpy(close, msg, len);
-  return close;
-}
+  char *response;
+  check(response     = malloc(*responseLen));
+  response[0]        = msg[0];
+  response[1]        = msg[1] & (~WS_HEAD_B1_MASK);
 
-char *webSocketResponsePingPong(const char *msg, int len, int opcode) {
-  char *pingPong;
-  check(pingPong = malloc(len));
+  // Append decoded payload and read close status code
+  if (header->payloadLen > 0) {
+    webSocketPayloadDecode(&response[2], msg + header->payloadOffset,
+                           header->payloadLen, header->payloadMask);
 
-  // Use same frame for response, except with changed opcode
-  memcpy(pingPong, msg, len);
-  if (opcode == WS_OPCODE_CTL_PING) {
-    pingPong[0]  = (char) ((msg[0] & 0xF0) | WS_OPCODE_CTL_PONG);
-  } else {
-    pingPong[0]  = (char) ((msg[0] & 0xF0) | WS_OPCODE_CTL_PING);
+    if (header->payloadLen > 1) {
+      *responseCode  = ((unsigned int)response[3] & 0xFF);
+      *responseCode |= ((unsigned int)response[2] & 0xFF) << 8;
+    }
   }
 
-  return pingPong;
+  return response;
 }
 
-char *webSocketPayloadDecode(const char *payload, int payloadLen,
+char *webSocketResponsePingPong(struct WebSocketHeader *header, const char *msg,
+                                int *responseLen) {
+  // Server responses shouldn't be masked
+  *responseLen   = header->payloadOffset + header->payloadLen
+                   - WS_PAYLOAD_MASK_LEN;
+
+  char *response;
+  check(response = malloc(*responseLen));
+  response[0]    = msg[0];
+  response[1]    = msg[1] & (~WS_HEAD_B1_MASK);
+
+  // Change opcode
+  if (header->opcode == WS_OPCODE_CTL_PING) {
+    response[0]  = (msg[0] & (~WS_HEAD_B0_OPCODE)) | WS_OPCODE_CTL_PONG;
+  } else {
+    response[0]  = (msg[0] & (~WS_HEAD_B0_OPCODE)) | WS_OPCODE_CTL_PING;
+  }
+
+  // Append decoded payload
+  if (header->payloadLen > 0) {
+    webSocketPayloadDecode(&response[2], msg + header->payloadOffset,
+                           header->payloadLen, header->payloadMask);
+  }
+
+  return response;
+}
+
+char *webSocketPayloadDecode(char *decoded, const char *payload, int payloadLen,
                              const unsigned char *payloadMask) {
-  char *decoded;
-  check(decoded = malloc(payloadLen + 1));
+  if (decoded == NULL) {
+    check(decoded = malloc(payloadLen));
+  }
 
   int i;
   for (i = 0; i < payloadLen; i++) {
     decoded[i]  = payload[i] ^ payloadMask[i%4];
   }
 
-  decoded[i]    = '\0';
   return decoded;
 }
 
-char *webSocketPayloadEncode(const char *payload, int payloadLen,
+char *webSocketPayloadEncode(char *encoded, const char *payload, int payloadLen,
                              const unsigned char *payloadMask) {
-  char *encoded;
-  check(encoded = malloc(payloadLen + 1));
+  if (encoded == NULL) {
+    check(encoded = malloc(payloadLen));
+  }
 
   int i;
   for (i = 0; i < payloadLen; i++) {
-    encoded[i]  = payload[i] ^ payloadMask[i%4];
+    encoded[i]    = payload[i] ^ payloadMask[i%4];
   }
 
-  encoded[i]    = '\0';
   return encoded;
 }
 
@@ -302,4 +332,30 @@ static char *webSocketAcceptToken(const char *key) {
   debug("OpenSSL is needed for WebSocket support!");
 #endif
   return accept ? accept : stringPrintf(NULL, "%s", "invalid");
+}
+
+// WebSockets debug functions
+
+void webSocketDebugDumpHeader(struct WebSocketHeader *header) {
+  debug(
+    "---------------------\n"
+    "WebSocket header dump\n"
+    "---------------------\n"
+    "     FIN: %d\n"
+    "    RSV1: %d\n"
+    "    RSV2: %d\n"
+    "    RSV3: %d\n"
+    "  OPCODE: 0x%02X\n"
+    "  MASKED: %d\n"
+    "  HEADER: %d B\n"
+    " PAYLOAD: %llu B\n"
+    "---------------------",
+    header->fin,
+    header->rsv1,
+    header->rsv2,
+    header->rsv3,
+    header->opcode,
+    header->masked,
+    header->payloadOffset,
+    header->payloadLen);
 }
