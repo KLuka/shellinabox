@@ -339,6 +339,16 @@ static int invalidatePendingHttpSession(void *arg, const char *key,
   return 1;
 }
 
+static void windowHandler(struct Session *session, int oldWidth,
+                          int oldHeight) {
+  // Reset window dimensions of the pseudo TTY, if changed since last time set.
+  if (session->width > 0 && session->height > 0 &&
+      (session->width != oldWidth || session->height != oldHeight)) {
+    debug("Window size changed to %dx%d", session->width, session->height);
+    setWindowSize(session->pty, session->width, session->height);
+  }
+}
+
 static int dataHandler(HttpConnection *http, struct Service *service,
                        const char *buf, int len ATTR_UNUSED, URL *url) {
   UNUSED(len);
@@ -409,12 +419,7 @@ static int dataHandler(HttpConnection *http, struct Service *service,
     serverSetTimeout(session->connection, AJAX_TIMEOUT);
   }
 
-  // Reset window dimensions of the pseudo TTY, if changed since last time set.
-  if (session->width > 0 && session->height > 0 &&
-      (session->width != oldWidth || session->height != oldHeight)) {
-    debug("Window size changed to %dx%d", session->width, session->height);
-    setWindowSize(session->pty, session->width, session->height);
-  }
+  windowHandler(session, oldWidth, oldHeight);
 
   // Process keypresses, if any. Then send a synchronous reply.
   if (keys) {
@@ -422,12 +427,12 @@ static int dataHandler(HttpConnection *http, struct Service *service,
     check(keyCodes        = malloc(strlen(keys)/2));
     int len               = 0;
     for (const unsigned char *ptr = (const unsigned char *)keys; ;) {
-      unsigned c0         = *ptr++;
+      unsigned int c0     = *ptr++;
       if (c0 < '0' || (c0 > '9' && c0 < 'A') ||
           (c0 > 'F' && c0 < 'a') || c0 > 'f') {
         break;
       }
-      unsigned c1         = *ptr++;
+      unsigned int c1     = *ptr++;
       if (c1 < '0' || (c1 > '9' && c1 < 'A') ||
           (c1 > 'F' && c1 < 'a') || c1 > 'f') {
         break;
@@ -477,6 +482,7 @@ static int dataHandler(HttpConnection *http, struct Service *service,
 
   return HTTP_SUSPEND;
 }
+
 
 static void serveStaticFile(HttpConnection *http, const char *contentType,
                             const char *start, const char *end) {
@@ -725,6 +731,45 @@ static int shellInABoxHttpHandler(HttpConnection *http, void *arg,
 
   deleteURL(url);
   return HTTP_DONE;
+}
+
+static int shellInABoxWebSocketHandler(HttpConnection *http, void *arg, int type,
+                                       const char *buf, int len) {
+
+  switch (type) {
+  case WS_CONNECTION_OPENED:
+    // TODO
+    debug("WebSocket handle open!");
+    return HTTP_READ_MORE;
+  case WS_CONNECTION_CLOSED:
+    // TODO
+    debug("WebSocket handle close!");
+    return HTTP_DONE;
+  case WS_CONNECTION_MESSAGE:
+    break;
+  default:
+    fatal("Unknown WebSocket handler event!");
+  }
+
+  debug("WebSocket payload: %.*s", len, buf);
+
+  // We format client messages as URL query parameters so we need to
+  // decode them here.
+  HashMap *args           = urlParseArgs(buf, len);
+  const char *sessionKey  = getFromHashMap(args, "session");
+  const char *rootURL     = getFromHashMap(args, "rooturl");
+  const char *width       = getFromHashMap(args, "width");
+  const char *height      = getFromHashMap(args, "height");
+  const char *keys        = getFromHashMap(args, "keys");
+  debug("WebSocket message params:");
+  debug(" session: %s", sessionKey ? sessionKey : "/");
+  debug("  height: %s", height ? height : "/");
+  debug("   width: %s", width ? width : "/");
+  debug("    keys: %s", keys ? keys : "/");
+  debug(" rootURL: %s", rootURL ? rootURL : "/");
+  deleteHashMap(args);
+
+  return HTTP_READ_MORE;
 }
 
 static int strtoint(const char *s, int minVal, int maxVal) {
@@ -1300,6 +1345,9 @@ int main(int argc, char * const argv[]) {
   for (int i = 0; i < numServices; i++) {
     serverRegisterHttpHandler(server, services[i]->path,
                               shellInABoxHttpHandler, services[i]);
+    // TODO
+    serverRegisterWebSocketHandler(server, "/websocket",
+                                   shellInABoxWebSocketHandler, services[i]);
   }
 
   // Register handlers for external files
