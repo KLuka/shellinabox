@@ -113,7 +113,8 @@ static char *urlMakeString(const char *buf, int len) {
   }
 }
 
-static void urlParseQueryString(struct HashMap *hashmap, const char *query, int len) {
+static void urlParseQueryString(struct HashMap *hashmap, const char *query,
+                                int len) {
   const char *key   = query;
   const char *value = NULL;
   for (const char *ampersand = query; len-- >= 0; ampersand++) {

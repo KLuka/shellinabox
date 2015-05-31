@@ -109,6 +109,7 @@ function ShellInABox(url, container) {
   this.pendingKeys  = '';
   this.keysInFlight = false;
   this.connected    = false;
+  this.websocket    = false;
   this.superClass.constructor.call(this, container);
 
   // We have to initiate the first XMLHttpRequest from a timer. Otherwise,
@@ -222,27 +223,37 @@ ShellInABox.prototype.sendKeys = function(keys) {
   if (this.keysInFlight || this.session == undefined) {
     this.pendingKeys          += keys;
   } else {
-    this.keysInFlight          = true;
     keys                       = this.pendingKeys + keys;
     this.pendingKeys           = '';
-    var request                = new XMLHttpRequest();
-    request.open('POST', this.url + '?', true);
-    request.setRequestHeader('Cache-Control', 'no-cache');
-    request.setRequestHeader('Content-Type',
-                           'application/x-www-form-urlencoded; charset=utf-8');
-    var content                = 'width=' + this.terminalWidth +
-                                 '&height=' + this.terminalHeight +
-                                 '&session=' +encodeURIComponent(this.session)+
-                                 '&keys=' + encodeURIComponent(keys);
-    request.onreadystatechange = function(shellInABox) {
-      return function() {
-               try {
-                 return shellInABox.keyPressReadyStateChange(request);
-               } catch (e) {
+	if (this.websocket) {
+      // Use Websockets
+	  var content              = 'width='    + this.terminalWidth +
+                                 '&height='  + this.terminalHeight +
+                                 '&session=' + encodeURIComponent(this.session) +
+                                 '&keys='    + encodeURIComponent(keys);
+	  this.websocket.send(content);
+	} else {
+	  // Use AJAX requests
+      this.keysInFlight          = true;
+      var request                = new XMLHttpRequest();
+      request.open('POST', this.url + '?', true);
+      request.setRequestHeader('Cache-Control', 'no-cache');
+      request.setRequestHeader('Content-Type',
+                             'application/x-www-form-urlencoded; charset=utf-8');
+      var content                = 'width=' + this.terminalWidth +
+                                   '&height=' + this.terminalHeight +
+                                   '&session=' +encodeURIComponent(this.session)+
+                                   '&keys=' + encodeURIComponent(keys);
+      request.onreadystatechange = function(shellInABox) {
+        return function() {
+                 try {
+                   return shellInABox.keyPressReadyStateChange(request);
+                 } catch (e) {
+                 }
                }
-             }
-      }(this);
-    request.send(content);
+        }(this);
+      request.send(content);
+	}
   }
 };
 
@@ -253,6 +264,48 @@ ShellInABox.prototype.keyPressReadyStateChange = function(request) {
       this.sendKeys('');
     }
   }
+};
+
+ShellInABox.prototype.wsConnect = function() {
+  var url                  = this.url.replace(/^http/, 'ws') + 'websocket';
+  this.websocket           = new WebSocket(url);
+  this.websocket.onopen    = function(shellInABox) {
+    return function(e) { shellInABox.wsOnOpen(e); }
+  }(this);
+  this.websocket.onclose   = function(shellInABox) {
+    return function(e) { shellInABox.wsOnClose(e); }
+  }(this);
+  this.websocket.onerror   = function(shellInABox) {
+    return function(e) { shellInABox.wsOnError(e); }
+  }(this);
+  this.websocket.onmessage = function(shellInABox) {
+    return function(e) { shellInABox.wsOnMessage(e); }
+  }(this);
+};
+
+ShellInABox.prototype.wsOnOpen = function(e) {
+  this.connected           = true;
+  var message              = 'width='    + this.terminalWidth +
+                             '&height='  + this.terminalHeight +
+                             '&rooturl=' + encodeURIComponent(this.rooturl);
+  this.websocket.send(message);
+};
+
+ShellInABox.prototype.wsOnClose = function(e) {
+  this.connected           = false;
+  this.sessionClosed();
+};
+
+ShellInABox.prototype.wsOnError = function(e) {
+  this.connected           = false;
+  this.sessionClosed();
+};
+
+ShellInABox.prototype.wsOnMessage = function(e) {
+  console.log("WebSocket raw message: " + e.data);
+  var message                     = eval('(' + e.data + ')');
+  console.log("WebSocket JSON message: ");
+  console.log(message);
 };
 
 ShellInABox.prototype.keysPressed = function(ch) {

@@ -56,10 +56,9 @@
 #define HTTP_SUSPEND       3
 #define HTTP_PARTIAL_REPLY 4
 
-#define WS_START_OF_FRAME    0x0100
-#define WS_END_OF_FRAME      0x0200
-#define WS_CONNECTION_OPENED 0xFF00
-#define WS_CONNECTION_CLOSED 0x7F00
+#define WS_CONNECTION_OPENED  1
+#define WS_CONNECTION_CLOSED  2
+#define WS_CONNECTION_MESSAGE 3
 
 #define NO_MSG             "\001"
 #define BINARY_MSG         "\001%d%p"
@@ -144,6 +143,7 @@ const char *urlGetQuery(URL *url);
 const char *urlGetAnchor(URL *url);
 const char *urlGetURL(URL *url);
 const HashMap *urlGetArgs(URL *url);
+HashMap *urlParseQuery(const char *buf, int len);
 HashMap *newHashMap(void (*destructor)(void *arg, char *key, char *value),
                     void *arg);
 void deleteHashMap(HashMap *hashmap);
