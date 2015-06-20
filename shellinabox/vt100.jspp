@@ -297,6 +297,15 @@ VT100.prototype.getUserSettings = function() {
     this.disableAlt         = true;
   }
 
+  try {
+    // On some devices enable soft keyboard icon by default.
+    if (navigator.userAgent.match(/PlayStation Vita/i) != null ||
+        navigator.userAgent.match(/Kindle/i) != null) {
+      this.softKeyboard     = true;
+    }
+  } catch (e) {
+  }
+
   if (this.visualBell) {
     this.signature          = Math.floor(16807*this.signature + 1) %
                                          ((1 << 31) - 1);
