@@ -1238,9 +1238,11 @@ static int httpHandleWebSocket(struct HttpConnection *http, int offset,
     debug("WebSocket opcode 0x%02X not yet supported!", header->opcode);
     connection                 = HTTP_DONE;
     break;
-  case WS_OPCODE_CTL_CLOSE:;
-    // On CLOSE messsage we respond with same, but unmasked payload and we
-    // close the connection.
+
+  // On CLOSE messsage we respond with same, but unmasked payload and we
+  // close the connection.
+  case WS_OPCODE_CTL_CLOSE:
+    ;;
     unsigned int code;
     response                   = webSocketResponseClose(header, buf,
                                                         &responseLen, &code);
@@ -1249,6 +1251,7 @@ static int httpHandleWebSocket(struct HttpConnection *http, int offset,
     connection                 = HTTP_DONE;
     free(response);
     break;
+
   case WS_OPCODE_CTL_PING:
   case WS_OPCODE_CTL_PONG:
     // On PING/PONG message we respond with oposite opcode and unmasked
@@ -1657,6 +1660,27 @@ void httpSendReply(struct HttpConnection *http, int code,
     httpCloseRead(http);
   }
 }
+
+int httpUsesWebSocket(struct HttpConnection *http) {
+  return http->state == WEBSOCKET;
+}
+
+void httpSendWebSocketReply(struct HttpConnection *http, int type,
+                            const char *msg, int len) {
+  int frameLen;
+  char *frame;
+  check(frame = webSocketFrame(type, msg, len, &frameLen));
+
+
+  debug("write to http: %s", msg);
+  debug("frame len: %d", frameLen);
+  debug("byte 0: 0x%02x", frame[0]);
+  debug("byte 1: 0x%02x", frame[1]);
+
+  httpWrite(http, frame, frameLen);
+  free(frame);
+}
+
 
 void httpSendWebSocketTextMsg(struct HttpConnection *http, int type,
                               const char *fmt, ...) {

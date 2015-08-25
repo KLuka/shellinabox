@@ -58,13 +58,13 @@ struct WebSocketHeader {
   int                payloadOffset;
 };
 
-#define WS_HEAD_B0_FIN    0x80
-#define WS_HEAD_B0_RSV1   0x40
-#define WS_HEAD_B0_RSV2   0x20
-#define WS_HEAD_B0_RSV3   0x10
-#define WS_HEAD_B0_OPCODE 0x0F
-#define WS_HEAD_B1_MASK   0x80
-#define WS_HEAD_B1_LENGTH 0x7F
+#define WS_HEAD_B0_FIN           0x80
+#define WS_HEAD_B0_RSV1          0x40
+#define WS_HEAD_B0_RSV2          0x20
+#define WS_HEAD_B0_RSV3          0x10
+#define WS_HEAD_B0_OPCODE        0x0F
+#define WS_HEAD_B1_MASK          0x80
+#define WS_HEAD_B1_LENGTH        0x7F
 
 #define WS_OPCODE_FRAME_CONTINUE 0x00
 #define WS_OPCODE_FRAME_TEXT     0x01
@@ -75,21 +75,19 @@ struct WebSocketHeader {
 
 #define WS_PAYLOAD_MASK_LEN      0x04
 
-struct WebSocketHeader *webSocketHeaderRead(const char *msg, int len);
-
+struct WebSocketHeader *webSocketHeaderRead(const char *frame, int len);
+char *webSocketFrame(int type, const void *payload, int payloadLen,
+                     int *frameLen);
 char *webSocketResponseClose(struct WebSocketHeader *header, const char *msg,
                              int *responseLen, unsigned int *responseCode);
 char *webSocketResponsePingPong(struct WebSocketHeader *header, const char *msg,
                                 int *responseLen);
-
 char *webSocketPayloadDecode(char *decoded, const char *payload, int payloadLen,
                              const unsigned char *payloadMask);
 char *webSocketPayloadEncode(char *encoded, const char *payload, int payloadLen,
                              const unsigned char *payloadMask);
-
 int webSocketHandshakeValidate(struct HttpConnection *http,
                                const char **key, const char **protocol);
 char *webSocketHandshakeResponse(const char *key, const char *protocol);
-
 void webSocketDebugDumpHeader(struct WebSocketHeader *header);
 #endif /* WEBSOCKET_H__ */

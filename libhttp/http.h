@@ -50,11 +50,17 @@
 #include <stdarg.h>
 #include <time.h>
 
-#define HTTP_DONE          0
-#define HTTP_ERROR         1
-#define HTTP_READ_MORE     2
-#define HTTP_SUSPEND       3
-#define HTTP_PARTIAL_REPLY 4
+#define HTTP_DONE             0
+#define HTTP_ERROR            1
+#define HTTP_READ_MORE        2
+#define HTTP_SUSPEND          3
+#define HTTP_PARTIAL_REPLY    4
+
+#define WS_MSG_TEXT           0
+#define WS_MSG_BINARY         1
+#define WS_MSG_CLOSE          2
+#define WS_MSG_PING           3
+#define WS_MSG_PONG           4
 
 #define WS_CONNECTION_OPENED  1
 #define WS_CONNECTION_CLOSED  2
@@ -117,6 +123,9 @@ void *httpSetPrivate(HttpConnection *http, void *private);
 void httpSendReply(HttpConnection *http, int code,
                    const char *msg, const char *fmt, ...)
   __attribute__((format(printf, 4, 5)));
+int  httpUsesWebSocket(HttpConnection *http);
+void httpSendWebSocketReply(HttpConnection *http, int type, const char *msg,
+                            int len);
 void httpSendWebSocketTextMsg(HttpConnection *http, int type, const char *fmt,
                               ...) __attribute__((format(printf, 3, 4)));
 void httpSendWebSocketBinaryMsg(HttpConnection *http, int type,

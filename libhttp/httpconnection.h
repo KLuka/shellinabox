@@ -61,6 +61,7 @@
 #define HTTP_SUSPEND       3
 #define HTTP_PARTIAL_REPLY 4
 
+
 #define WS_UNDEFINED       0x1000
 #define WS_START_OF_FRAME  0x0100
 #define WS_END_OF_FRAME    0x0200
@@ -139,6 +140,8 @@ void *httpSetPrivate(struct HttpConnection *http, void *private);
 void httpSendReply(struct HttpConnection *http, int code,
                    const char *msg, const char *fmt, ...)
   __attribute__((format(printf, 4, 5)));
+void httpSendWebSocketReply(struct HttpConnection *http, int type,
+                            const char *buf, int len);
 void httpSendWebSocketTextMsg(struct HttpConnection *http, int type,
                               const char *fmt, ...)
   __attribute__((format(printf, 3, 4)));

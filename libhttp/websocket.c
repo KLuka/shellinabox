@@ -99,6 +99,68 @@ struct WebSocketHeader *webSocketHeaderRead(const char *msg, int len) {
   return header;
 }
 
+char *webSocketFrame(int type, const void *payload, int payloadLen,
+                     int *len) {
+  char *frame = NULL;
+  switch (type) {
+  case WS_MSG_TEXT:
+    if (payloadLen <= 125) {
+	  *len        = payloadLen + 2;
+      check(frame = malloc(*len));
+	  frame[0]    = WS_HEAD_B0_FIN    & 0xFF;
+	  frame[0]   |= WS_HEAD_B0_OPCODE & WS_OPCODE_FRAME_TEXT;
+	  frame[1]    = WS_HEAD_B1_LENGTH & (unsigned char) payloadLen;
+	  if (payload && payloadLen) {
+	    memcpy(&frame[2], payload, payloadLen);
+	  }
+	  debug("top shit");
+	} else if (payloadLen <= 4096) {
+	  *len        = payloadLen + 4;
+      check(frame = malloc(*len));
+	  frame[0]    = WS_HEAD_B0_FIN    & 0xFF;
+	  frame[0]   |= WS_HEAD_B0_OPCODE & WS_OPCODE_FRAME_TEXT;
+	  frame[1]    = WS_HEAD_B1_LENGTH & 0x7E;
+	  frame[2]    = 0xFF & (payloadLen >> 8);
+	  frame[3]    = 0xFF & (payloadLen);
+	  if (payload && payloadLen) {
+	    memcpy(&frame[4], payload, payloadLen);
+	  }
+	} else {
+	  debug("lelele");
+	}
+    break;
+
+  case WS_MSG_CLOSE:
+    check(payloadLen <= 125);
+	*len        = payloadLen + 2;
+    check(frame = malloc(*len));
+	frame[0]    = WS_HEAD_B0_FIN    & 0xFF;
+	frame[0]   |= WS_HEAD_B0_OPCODE & WS_OPCODE_CTL_PING;
+	frame[1]    = WS_HEAD_B1_LENGTH & payloadLen;
+	if (payload && payloadLen) {
+	  memcpy(&frame[4], payload + 2, payloadLen - 2);
+	}
+    break;
+
+  case WS_MSG_PING:
+  case WS_MSG_PONG:
+    check(payloadLen <= 125);
+	*len        = payloadLen + 2;
+    check(frame = malloc(*len));
+	frame[0]    = WS_HEAD_B0_FIN    & 0XFF;
+	frame[0]   |= WS_HEAD_B0_OPCODE & 
+	              ((type == WS_MSG_PING) ? WS_OPCODE_CTL_PING : WS_OPCODE_CTL_PONG);
+	frame[1]    = WS_HEAD_B1_LENGTH & payloadLen;
+	if (payload && payloadLen) {
+	  memcpy(&frame[2], payload, payloadLen);
+	}
+	break;
+  default:
+    check(0);
+  } 
+  return frame;
+}
+
 char *webSocketResponseClose(struct WebSocketHeader *header, const char *msg,
                              int *responseLen, unsigned int *responseCode) {
   // Server responses shouldn't be masked and use the same code as
@@ -181,6 +243,7 @@ char *webSocketPayloadEncode(char *encoded, const char *payload, int payloadLen,
   return encoded;
 }
 
+
 #ifndef HAVE_STRCASESTR
 static char *strcasestr(const char *haystack, const char *needle) {
   // This algorithm is O(len(haystack)*len(needle)). Much better algorithms
@@ -242,7 +305,7 @@ int webSocketHandshakeValidate(struct HttpConnection *http,
 
   // For now Shellinabox supports only WebSocket version 13
   if (atoi(version) != 13) {
-    debug("WS version \"%s\" not supported!", version);
+    debug("[ws] WebSocket protocol version \"%s\" not supported!", version);
     return 0;
   }
 
@@ -329,7 +392,7 @@ static char *webSocketAcceptToken(const char *key) {
   // For now we need OpenSSL headers for SHA1 hashing and base64 encoding.
   // If this is not available we return incorrect token and handle the error
   // on client side.
-  debug("OpenSSL is needed for WebSocket support!");
+  debug("[ws] OpenSSL is needed for WebSocket support!");
 #endif
   return accept ? accept : stringPrintf(NULL, "%s", "invalid");
 }

@@ -287,6 +287,7 @@ static void sessionDone(void *arg) {
 static int handleSession(struct ServerConnection *connection, void *arg,
                          short *events, short revents) {
   struct Session *session       = (struct Session *)arg;
+  debug("HANDLE SESSION %s", session->sessionKey);
   session->connection           = connection;
   int len                       = MAX_RESPONSE - session->len;
   if (len <= 0) {
@@ -302,13 +303,33 @@ static int handleSession(struct ServerConnection *connection, void *arg,
   }
   int timedOut                  = serverGetTimeout(connection) < 0;
   if (bytes || timedOut) {
+    debug("bytes were read!!!");
     if (!session->http && timedOut) {
       debug("Timeout. Closing session.");
       session->cleanup = 1;
       return 0;
     }
     check(!session->done);
-    check(completePendingRequest(session, buf, bytes, MAX_RESPONSE));
+	if (session->http && httpUsesWebSocket(session->http)) {
+	  debug(" Respond with JSON!!!");
+	  char *data                = jsonEscape(buf, bytes);
+      char *json                = stringPrintf(NULL, "{"
+                                               "\"session\":\"%s\","
+                                               "\"data\":\"%s\""
+                                               "}",
+                                               session->sessionKey, data);
+	  httpSendWebSocketReply(session->http, WS_MSG_TEXT, json, strlen(json));
+	  free(data);
+	  free(json);
+	  // We need to use some delay so that we don't spam clients with each read
+	  // operation. TODO
+	  struct timespec ts;
+	  ts.tv_sec                 = 0;
+	  ts.tv_nsec                = 1000 * 1000 * 100;
+	  nanosleep(&ts, NULL);
+	} else {
+      check(completePendingRequest(session, buf, bytes, MAX_RESPONSE));
+	}
     connection                  = serverGetConnection(session->server,
                                                       connection,
                                                       session->pty);
@@ -347,6 +368,27 @@ static void windowHandler(struct Session *session, int oldWidth,
     debug("Window size changed to %dx%d", session->width, session->height);
     setWindowSize(session->pty, session->width, session->height);
   }
+}
+
+static int keysHandler(const char *keys, char **keyCodes) {
+  // Translate C0 and C1 control codes to key codes
+  int len              = 0;
+  check((*keyCodes)    = malloc(strlen(keys)/2));
+  for (const unsigned char *ptr = (const unsigned char *)keys; ;) {
+    unsigned int c0    = *ptr++;
+    if (c0 < '0' || (c0 > '9' && c0 < 'A') ||
+        (c0 > 'F' && c0 < 'a') || c0 > 'f') {
+      break;
+    }
+    unsigned int c1    = *ptr++;
+    if (c1 < '0' || (c1 > '9' && c1 < 'A') ||
+        (c1 > 'F' && c1 < 'a') || c1 > 'f') {
+      break;
+    }
+    (*keyCodes)[len++] = 16*((c0 & 0xF) + 9*(c0 > '9')) +
+                             (c1 & 0xF) + 9*(c1 > '9');
+  }
+  return len;
 }
 
 static int dataHandler(HttpConnection *http, struct Service *service,
@@ -425,23 +467,10 @@ static int dataHandler(HttpConnection *http, struct Service *service,
   // Process keypresses, if any. Then send a synchronous reply.
   if (keys) {
     char *keyCodes;
-    check(keyCodes        = malloc(strlen(keys)/2));
-    int len               = 0;
-    for (const unsigned char *ptr = (const unsigned char *)keys; ;) {
-      unsigned int c0     = *ptr++;
-      if (c0 < '0' || (c0 > '9' && c0 < 'A') ||
-          (c0 > 'F' && c0 < 'a') || c0 > 'f') {
-        break;
-      }
-      unsigned int c1     = *ptr++;
-      if (c1 < '0' || (c1 > '9' && c1 < 'A') ||
-          (c1 > 'F' && c1 < 'a') || c1 > 'f') {
-        break;
-      }
-      keyCodes[len++]     = 16*((c0 & 0xF) + 9*(c0 > '9')) +
-                                (c1 & 0xF) + 9*(c1 > '9');
-    }
-    if (write(session->pty, keyCodes, len) < 0 && errno == EAGAIN) {
+    int keyCodesLen       = keysHandler(keys, &keyCodes);
+	debug("KEYS: %s, len: %d", keys, strlen(keys));
+	debug("CODE: %s, len: %d", keyCodes, keyCodesLen);
+    if (write(session->pty, keyCodes, keyCodesLen) < 0 && errno == EAGAIN) {
       completePendingRequest(session, "\007", 1, MAX_RESPONSE);
     }
     free(keyCodes);
@@ -451,11 +480,13 @@ static int dataHandler(HttpConnection *http, struct Service *service,
   } else {
     // This request is polling for data. Finish any pending requests and
     // queue (or process) a new one.
+	debug("polling for data!");
     if (session->http && session->http != http &&
         !completePendingRequest(session, "", 0, MAX_RESPONSE)) {
       httpSendReply(http, 400, "Bad Request", NO_MSG);
       return HTTP_DONE;
     }
+	debug("done polling!");
     session->http         = http;
   }
 
@@ -739,23 +770,22 @@ static int shellInABoxHttpHandler(HttpConnection *http, void *arg,
   return HTTP_DONE;
 }
 
-static int shellInABoxWebSocketHandler(HttpConnection *http, void *arg, int type,
-                                       const char *buf, int len) {
+static int shellInABoxWebSocketHandler(HttpConnection *http, void *arg, 
+                                       int type, const char *buf, int len) {
 
-  switch (type) {
-  case WS_CONNECTION_OPENED:
-    // TODO
-    debug("WebSocket handle open!");
+  if (type == WS_CONNECTION_OPENED) {
+    // There is nothing to do here. We keep the connection open and wait for
+	// messages from client.
     return HTTP_READ_MORE;
-  case WS_CONNECTION_CLOSED:
-    // TODO
-    debug("WebSocket handle close!");
-    return HTTP_DONE;
-  case WS_CONNECTION_MESSAGE:
-    break;
-  default:
-    fatal("Unknown WebSocket handler event!");
   }
+  
+  if (type == WS_CONNECTION_CLOSED) {
+    // Clean up
+    return HTTP_DONE;
+  }
+
+  // From here messages should be handled
+  check(type == WS_CONNECTION_MESSAGE);
 
   debug("WebSocket payload: %.*s", len, buf);
 
@@ -767,14 +797,71 @@ static int shellInABoxWebSocketHandler(HttpConnection *http, void *arg, int type
   const char *width       = getFromHashMap(args, "width");
   const char *height      = getFromHashMap(args, "height");
   const char *keys        = getFromHashMap(args, "keys");
+
+  debug(" ");
   debug("WebSocket message params:");
   debug(" session: %s", sessionKey ? sessionKey : "/");
   debug("  height: %s", height ? height : "/");
   debug("   width: %s", width ? width : "/");
   debug("    keys: %s", keys ? keys : "/");
   debug(" rootURL: %s", rootURL ? rootURL : "/");
-  deleteHashMap(args);
+  debug(" ");
 
+  int sessionIsNew;
+  struct Session *session = findSession(sessionKey, cgiSessionKey, &sessionIsNew, http);
+  if (session == NULL) {
+    // TODO kill connection
+	httpSendWebSocketReply(http, WS_MSG_CLOSE, NULL, 0);
+    deleteHashMap(args);
+	return HTTP_DONE;
+  }
+
+  if (sessionIsNew) {
+
+    debug("New session");
+
+	session->http        = http;
+	if (launchChild(0, session, rootURL && *rootURL ? rootURL : "/") < 0) {
+		abandonSession(session);
+		// TODO
+		return HTTP_DONE;
+	}
+
+	session->connection   = serverAddConnection(httpGetServer(http),
+           	session->pty, handleSession,
+			sessionDone, session);
+	serverSetTimeout(session->connection, AJAX_TIMEOUT);
+	debug("new session");
+    char *json                  = stringPrintf(NULL, "{"
+                                               "\"session\":\"%s\","
+                                               "\"data\":\"\""
+                                               "}",
+                                               session->sessionKey);
+
+	// send response !	
+	httpSendWebSocketReply(http, WS_MSG_TEXT, json, strlen(json));
+	debug("%s", json);
+    free(json);
+	debug("reply sent!");
+	 // Re-enable input on the child's pty
+    serverConnectionSetEvents(session->server, session->connection,
+                                 session->pty, POLLIN);
+  }
+
+
+  // Handle window
+  
+  // Handle keys
+  if (keys) {
+    char *keyCodes;
+	int keyCodesLen  = keysHandler(keys, &keyCodes);
+    write(session->pty, keyCodes, keyCodesLen);
+    free(keyCodes);
+    // check(session->http != http);
+    return HTTP_READ_MORE;
+  }
+
+  deleteHashMap(args);
   return HTTP_READ_MORE;
 }
 
